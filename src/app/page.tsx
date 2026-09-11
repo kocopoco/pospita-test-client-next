@@ -41,6 +41,19 @@ interface PospitaErrorResponse {
   message: string;
 }
 
+interface PospitaVerificationResponse {
+  status: "success" | "error";
+  is_valid: boolean;
+  code: string;
+  message: string;
+  details?: {
+    zipcode: string;
+    input_address: string;
+    matched_address?: string;
+    candidates?: string[];
+  };
+}
+
 export default function PospitaFormDemo() {
   const [activeTab, setActiveTab] = useState<"auto-fill" | "reverse" | "verify">("auto-fill");
 
@@ -63,9 +76,9 @@ export default function PospitaFormDemo() {
 
   // Tab 3: Verification State
   const [vZip, setVZip] = useState("100-0001");
-  const [vAddress, setVAddress] = useState("東京都千代田区千代田");
+  const [vAddress, setVAddress] = useState("東京都千代田区大手町");
   const [isVerifying, setIsVerifying] = useState(false);
-  const [verifyResult, setVerifyResult] = useState<{ isMatch: boolean; message: string; data?: any } | null>(null);
+  const [verifyResult, setVerifyResult] = useState<PospitaVerificationResponse | null>(null);
 
   // Copy state for feedback
   const [copiedZip, setCopiedZip] = useState<string | null>(null);
@@ -80,13 +93,12 @@ export default function PospitaFormDemo() {
     }
   }, [zipcode]);
 
-  // Function 1: Fetch address by postal code using updated pospita API
+  // Function 1: Fetch address by postal code using pospita API
   const fetchAddressByZipcode = async (zip7: string) => {
     setIsLoadingZip(true);
     setZipStatus({ type: "info", msg: "pospita APIから住所データを取得中..." });
 
     try {
-      // Calling official pospita API endpoint: GET /api/v1/addresses/{zipcode}
       const res = await fetch(`https://pospita.jp/api/v1/addresses/${zip7}`);
 
       if (!res.ok) {
@@ -103,7 +115,6 @@ export default function PospitaFormDemo() {
 
       const data: PospitaSuccessResponse = await res.json();
 
-      // Clean & standardized response: data.results is ALWAYS an array!
       if (data.results && data.results.length > 0) {
         const item = data.results[0];
         setPrefecture(item.prefecture || "");
@@ -136,7 +147,6 @@ export default function PospitaFormDemo() {
     setHasSearched(true);
 
     try {
-      // Calling official pospita API reverse search: GET /api/v1/addresses?address={keyword}
       const res = await fetch(`https://pospita.jp/api/v1/addresses?address=${encodeURIComponent(searchKeyword.trim())}`);
       if (!res.ok) throw new Error("API Exception");
 
@@ -150,7 +160,7 @@ export default function PospitaFormDemo() {
     }
   };
 
-  // Function 3: Verify Zipcode & Address consistency
+  // Function 3: Verify Zipcode & Address using official POST /api/v1/addresses/verifications
   const handleVerify = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsVerifying(true);
@@ -159,51 +169,26 @@ export default function PospitaFormDemo() {
     const cleanZip = vZip.replace(/\D/g, "");
 
     try {
-      const res = await fetch(`https://pospita.jp/api/v1/addresses/${cleanZip}`);
-      if (!res.ok) {
-        if (res.status === 404) {
-          const errData: PospitaErrorResponse = await res.json();
-          setVerifyResult({
-            isMatch: false,
-            message: `⚠️ ${errData.message}`,
-          });
-          return;
-        }
-        throw new Error("Validation failed");
-      }
-
-      const data: PospitaSuccessResponse = await res.json();
-      const list = data.results || [];
-
-      if (list.length === 0) {
-        setVerifyResult({
-          isMatch: false,
-          message: "指定された郵便番号の登録情報が見つかりませんでした。",
-        });
-        return;
-      }
-
-      // Check if user input address matches prefecture & city/town
-      const matched = list.find((item: PospitaAddress) => {
-        return vAddress.includes(item.prefecture) && (vAddress.includes(item.city) || vAddress.includes(item.town));
+      // Calling brand-new official endpoint: POST /api/v1/addresses/verifications
+      const res = await fetch("https://pospita.jp/api/v1/addresses/verifications", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          zipcode: cleanZip,
+          address: vAddress.trim(),
+        }),
       });
 
-      if (matched) {
-        setVerifyResult({
-          isMatch: true,
-          message: `✅ 整合性確認OK: 「${matched.prefecture}${matched.city}${matched.town}」と一致しました！`,
-          data: matched,
-        });
-      } else {
-        const expected = list.map((i: PospitaAddress) => `${i.prefecture}${i.city}${i.town}`).join(" または ");
-        setVerifyResult({
-          isMatch: false,
-          message: `⚠️ 不一致: 郵便番号 〒${vZip} に対応する正しい住所は 「${expected}」 です。`,
-        });
-      }
+      const data: PospitaVerificationResponse = await res.json();
+      setVerifyResult(data);
     } catch (err) {
+      console.error("Verification API Error:", err);
       setVerifyResult({
-        isMatch: false,
+        status: "error",
+        is_valid: false,
+        code: "SERVER_ERROR",
         message: "検証処理中にエラーが発生しました。",
       });
     } finally {
@@ -309,7 +294,7 @@ export default function PospitaFormDemo() {
               }`}
             >
               <ShieldCheck className="w-4 h-4" />
-              <span>03. 住所整合性チェック</span>
+              <span>03. 住所整合性チェック (POST)</span>
             </button>
           </div>
         </div>
@@ -583,16 +568,16 @@ export default function PospitaFormDemo() {
           </div>
         )}
 
-        {/* Tab 3: Address Verification */}
+        {/* Tab 3: Address Verification (Updated POST endpoint) */}
         {activeTab === "verify" && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl flex flex-col gap-6">
             <div className="border-b border-slate-800/80 pb-4">
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-orange-400" />
-                <span>郵便番号 × 住所 整合性自動検証</span>
+                <span>郵便番号 × 住所 整合性自動検証 (`POST /verifications`)</span>
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                ユーザーが手入力した「郵便番号」と「住所」が正しく一致しているかをpospitaが自動チェックします。
+                新設された <code className="bg-slate-800 px-1.5 py-0.5 rounded text-orange-300 font-mono">POST /api/v1/addresses/verifications</code> を使用し、アクセスログに個人住所を残さず安全に完全検証します。
               </p>
             </div>
 
@@ -614,7 +599,7 @@ export default function PospitaFormDemo() {
                   type="text"
                   value={vAddress}
                   onChange={(e) => setVAddress(e.target.value)}
-                  placeholder="例: 東京都千代田区千代田"
+                  placeholder="例: 東京都千代田区大手町"
                   className="bg-slate-950 border border-slate-700 focus:border-orange-500 rounded-xl px-4 py-3 text-slate-100 text-sm outline-none"
                 />
               </div>
@@ -633,7 +618,7 @@ export default function PospitaFormDemo() {
                   ) : (
                     <>
                       <ShieldCheck className="w-4 h-4" />
-                      <span>整合性を自動検証する</span>
+                      <span>POST リクエストで整合性を自動検証する</span>
                     </>
                   )}
                 </button>
@@ -643,21 +628,38 @@ export default function PospitaFormDemo() {
             {/* Verification Result Feedback */}
             {verifyResult && (
               <div
-                className={`p-5 rounded-2xl border flex flex-col gap-2 font-medium transition-all ${
-                  verifyResult.isMatch
+                className={`p-5 rounded-2xl border flex flex-col gap-3 font-medium transition-all ${
+                  verifyResult.is_valid
                     ? "bg-emerald-950/60 border-emerald-800 text-emerald-200"
                     : "bg-rose-950/60 border-rose-800 text-rose-200"
                 }`}
               >
-                <div className="flex items-center gap-2 font-bold text-base">
-                  {verifyResult.isMatch ? (
-                    <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                  ) : (
-                    <AlertCircle className="w-5 h-5 text-rose-400" />
-                  )}
-                  <span>{verifyResult.isMatch ? "整合性チェック成功" : "整合性チェック不一致"}</span>
+                <div className="flex items-center justify-between font-bold text-base">
+                  <div className="flex items-center gap-2">
+                    {verifyResult.is_valid ? (
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                    ) : (
+                      <AlertCircle className="w-5 h-5 text-rose-400" />
+                    )}
+                    <span>{verifyResult.is_valid ? "整合性チェック成功 (is_valid: true)" : "整合性チェック失敗 (is_valid: false)"}</span>
+                  </div>
+                  <span className="font-mono text-xs px-2 py-0.5 rounded bg-slate-900 border border-slate-700">
+                    CODE: {verifyResult.code}
+                  </span>
                 </div>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">{verifyResult.message}</p>
+
+                {verifyResult.details && (
+                  <div className="mt-1 p-3 bg-slate-950/80 rounded-xl border border-slate-800/80 text-xs font-mono flex flex-col gap-1 text-slate-400">
+                    <div><span className="text-slate-500">入力郵便番号:</span> {verifyResult.details.zipcode}</div>
+                    <div><span className="text-slate-500">入力住所:</span> {verifyResult.details.input_address}</div>
+                    {verifyResult.details.matched_address && (
+                      <div className="text-emerald-400 font-bold">
+                        <span className="text-slate-500 font-normal">マッチ住所:</span> {verifyResult.details.matched_address}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
